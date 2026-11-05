@@ -14,3 +14,5 @@ jobs:
         with:
           python-version: '3.13'
       - run: python -B -m unittest discover -s tests -p "test_*.py"
+        env:
+          PYTHONUTF8: '1'
