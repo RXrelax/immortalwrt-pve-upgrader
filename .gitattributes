@@ -1,0 +1,8 @@
+* text=auto
+*.sh text eol=lf
+*.py text eol=lf
+Dockerfile* text eol=lf
+engine/templates/AdGuardHome text eol=lf
+engine/templates/adguardhome-native text eol=lf
+*.cmd text eol=crlf
+*.png binary

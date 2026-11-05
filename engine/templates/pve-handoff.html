@@ -1,0 +1,96 @@
+<!DOCTYPE html>
+<html lang="zh-CN"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>ImmortalWrt {{VERSION}} · PVE 离线切换手册</title>
+<style>
+*{box-sizing:border-box}body{max-width:900px;margin:0 auto;padding:28px 24px;color:#192c30;background:#fff;font:16px/1.65 system-ui,"Microsoft YaHei",sans-serif}h1{line-height:1.25}h2{margin-top:2em;border-top:2px solid #17675e;padding-top:.65em}h3{margin-bottom:.3em}p,li{margin:.4em 0}nav{display:flex;flex-wrap:wrap;gap:6px 18px}a{color:#155f55}code,pre{font: .95em/1.5 Consolas,monospace;overflow-wrap:anywhere}pre{padding:12px;background:#f0f5f4;white-space:pre-wrap}table{width:100%;border-collapse:collapse}td,th{border:1px solid #bdc9c6;text-align:left;padding:7px;vertical-align:top}th{background:#edf4f1}.check{border-left:4px solid #cc872a;background:#fff8ea;padding:10px 15px}.t{font-size:.9em;color:#48605c}@media print{body{padding:0;font-size:10pt}nav{display:none}h2,h3{break-after:avoid}tr,pre,.check{break-inside:avoid}}
+</style></head><body>
+<h1>{{VERSION}} · PVE 离线切换手册</h1>
+<p>目标是同一台主路由虚拟机，SeaBIOS、VirtIO SCSI、{{DISK_GIB}} GiB 系统盘，启动分区 {{BOOT_MIB}} MiB，ext4 根分区 {{ROOT_MIB}} MiB。以下内容可离线阅读或打印。在开始停机前，请把本文件保存在能直接管理 PVE 的电脑上。</p>
+<nav><a href="#before">停机前</a><a href="#upload">上传</a><a href="#switch">切盘</a><a href="#restore">恢复</a><a href="#test">验收</a><a href="#rollback">回退</a><a href="#errors">故障</a><a href="#retire">清理</a></nav>
+<p>本次公开系统盘 SHA-256</p><pre>{{FIRMWARE_DIGEST}}</pre>
+<p class="check">本次布局对应的私有恢复盘标记为 <code>{{MARKER}}</code>。系统版本、磁盘容量和启动分区大小都需要与本手册一致。布局改变后，请用原始备份重新生成私有 RAW 并核对新摘要。复用已上传的公开 QCOW2 前，请核对上方系统盘摘要。</p>
+<p>{{PRIVATE_STATUS}} 私人配置包、恢复盘及其摘要仅在你自己的电脑和 PVE 之间使用。</p>
+<h2 id="before">1　停机前保住现状</h2>
+<ol>
+<li>用本地有线电脑打开 <b>PVE 宿主机的管理 IP</b>。确认电脑与宿主机在可直达的管理网段或 VLAN。若当前依赖主路由的 VPN、跨网段路由或域名解析才能连接 PVE，请先准备独立的本地管理入口。必要时预先记下可用的临时静态地址与掩码。</li>
+<li>对当前 VM 做一份独立 PVE 整机备份，逐项核对备份任务包含所使用的启动盘、extroot 或数据盘，结束状态为 <code>TASK OK</code>。将原始 LuCI/sysupgrade 备份和有用的历史整机备份另行保留。若当前系统刚被刷回 32 MiB 且配置已丢，请优先选<b>丢失前</b>的完整备份。刚生成的默认配置包无法还原已经消失的设置。</li>
+<li>在本机纸张或个人笔记中记录下面各项。以 <b>当前 Hardware 页</b>为准：快照回滚、重装或删除过卷后，卷 ID 和槽位都可能变化。</li>
+</ol>
+<table><tr><th>记录对象</th><th>从哪里看</th><th>写下什么</th></tr>
+<tr><td>当前 VM</td><td>PVE → 当前路由 VM → Hardware / Options</td><td>VMID、SeaBIOS、SCSI 控制器、原启动顺序</td></tr>
+<tr><td>旧盘，一盘或多盘</td><td>Hardware → Hard Disk</td><td>每块旧盘的完整卷 ID、容量、原槽位、读写/备份等选项。双盘 extroot 时两块都是回退必需品。</td></tr>
+<tr><td>网卡与管理</td><td>PVE 网卡 ↔ 旧 LuCI 接口/设备</td><td>对应的 LAN/WAN、原 MAC、网桥、VLAN 与 Disconnect 状态；原管理地址、掩码与 SSH 端口。使用网桥/VLAN 时按成员确认，板载编号本身不能决定角色。</td></tr>
+</table>
+<p>在向导中核对备份排除项，尤其是 OpenClash 的活动 YAML、核心、规则、VPN 身份文件以及你手工保存的服务数据。备份包实际包含的图像和过滤文件才能迁移；已丢失的 Argon 壁纸可以从旧备份取回后再生成。若必要文件缺失，先补齐并重新生成目标为 {{VERSION}} 的私有恢复盘。将两个输出文件的大小和对应的 SHA-256 记录在本机。</p>
+<h2 id="upload">2　通过自己的局域网上传两份磁盘文件</h2>
+<ol>
+<li>PVE → 节点 → 支持导入文件的目录存储（常用 <code>local</code>）→ <b>Import → Upload</b>。如无菜单，在 Datacenter → Storage → 该目录存储 → Edit 的 Content 中保留原选项并启用 Import。若 PVE 版本不支持，用官方文档核对支持的导入方式后再进行。</li>
+<li>上传公开 <code>.qcow2</code>，将 PVE 上传窗口的 <b>File name</b> 改为 <code>{{UPLOAD_NAME}}</code>，便于区别以前的 <code>router.qcow2</code>。校验算法选 SHA-256，填写上面的公开系统盘摘要。再单独上传私有 <code>.raw</code>，填写向导为<b>本次恢复盘</b>生成的摘要；如果同名文件已存在，选择一个新的可辨识文件名并记下。两次都须看到 <code>TASK OK</code>。这两份磁盘通过 PVE 导入。LuCI 的“刷写固件”仅用于匹配的 sysupgrade 镜像，不能接收它们。</li>
+<li>确认导入文件的目录存储有足够暂存空间，目标磁盘存储能容纳 {{DISK_GIB}} GiB 系统盘与本次恢复盘；在 PVE 文件列表上按文件用途识别。大容量与本地文件大小不同，是稀疏镜像的正常表现。</li>
+</ol>
+<h2 id="switch">3　关机、导入新盘并暂时隔离网络</h2>
+<p>导入期间由一人操作，保持 VM 关机。若提示卷大小、状态或原配置已变化，先检查 PVE 任务和硬件；保留待核对卷。使用新一轮预演前要弄清上轮是否已经分配磁盘。</p>
+<p class="check">从现在起会中断主路由服务。请确认 PVE 可以独立访问，旧卷的身份已经记下。旧盘先 <b>Detach</b>，作为 <b>Unused Disk</b> 保留；直到完成验收和独立备份才考虑永久 <b>Remove</b>。</p>
+<ol>
+<li>选中实际 VM → <b>Shutdown</b>，等状态变为 <b>Stopped</b>。接下来选一种方式导入系统盘和恢复盘，完成后记录<b>新分配的槽位及完整卷 ID</b>。</li>
+<li><b>GUI 方式：</b>Hardware → Add → <b>Import Hard Disk</b>。Import Storage 为文件来源（如 local），Select Image 选已校验的 .qcow2，Target Storage 选存放 VM 磁盘的存储（如 local-lvm），选择空闲的 SCSI 槽，系统盘可写并纳入备份。重复一次，将 .raw 放到另一个空闲的 SCSI 槽，在 Advanced 选 <b>Read-only</b> 并取消 Backup。若界面只有可填“Disk size”的表单，请返回选择 Import Hard Disk。</li>
+<li><b>可选节点命令方式：</b>本工具附带 <code>engine/pve-stage.sh</code>。只有你选择此方式时才把脚本单独放到 VM 所在的 PVE 节点。先以 root 在该<b>节点 Shell</b>调用 <code>plan</code> 只读预检，确认后调用 <code>stage</code>。参数见下例，把每一个占位符替换为实际值。预演会用节点上的 <code>qemu-img</code> 读取 QCOW2 的 BIOS 分区表，并核对恢复盘的布局标记。看到的磁盘和分区容量应与本手册一致。脚本只支持预检通过的 LVM-thin 目标。已经在 GUI 导入过这两个磁盘就跳过该命令，避免重复分配。若节点报告未定的部分导入，先查 PVE 任务及 Unused 卷，不要重设槽位重复执行。</li></ol>
+<pre>bash pve-stage.sh plan VMID '来源存储:import/系统盘文件.qcow2' '来源存储:import/恢复盘文件.raw' 目标存储 系统盘SHA256 恢复盘SHA256
+bash pve-stage.sh stage VMID '来源存储:import/系统盘文件.qcow2' '来源存储:import/恢复盘文件.raw' 目标存储 系统盘SHA256 恢复盘SHA256</pre>
+<ol start="4"><li>对已有 LAN/WAN 网卡逐一勾选 <b>Disconnect</b> 并保存，保留桥、VLAN、MAC 和防火墙选项。若有直通网卡，请在独立管理路径就绪后物理隔离。按记录逐一 <b>Detach 旧卷</b>，保持为 Unused。核对已连接的硬盘恰好两块：新的 {{DISK_GIB}} GiB 系统盘可写，私有配置盘只读。</li>
+<li>Options → <b>Boot Order</b>，只勾选新系统盘，并置于首位。若希望通过可粘贴的串口终端操作，可在停机时通过 Hardware → Add → Serial Port 添加编号 0（已有则跳过）。启动 VM，打开其 Console。也可在 PVE 节点 Shell 输入 <code>qm terminal 实际VMID</code>，回车后确认出现 ImmortalWrt 提示符，通常可右键或 Ctrl+Shift+V 粘贴；Ctrl+O 可离开该串口会话。</li></ol>
+<h2 id="restore">4　在新系统的 VM Console 恢复</h2>
+<p>以下命令放在<b>新系统的 ImmortalWrt 终端</b>，逐行执行。出现 “Please press Enter to activate this console” 时先按回车。</p>
+<pre>cat /etc/openwrt_release
+cat /proc/partitions
+df -h / /boot</pre>
+<p>版本须为 {{VERSION}}；系统盘约 {{DISK_GIB}} GiB，其第 1 分区为 {{BOOT_MIB}} MiB、根分区为 {{ROOT_MIB}} MiB，实际显示文件系统容量会稍小。若分区容量不符，或发现旧 extroot 或其他旧磁盘，先关机核对启动盘和附件。</p>
+<p>从上一步按容量和分区识别<b>另一块整盘</b>（恢复盘没有分区表）。通常是 <code>/dev/sdb</code>；SCSI 槽位并不保证客体盘符。下例仅在实际恢复盘为 sdb 时原样输入；若不同，请只将第一行的设备改为已确认的恢复盘，然后看下面两条命令的结果。</p>
+<pre>D=/dev/sdb
+cat /sys/class/block/${D##*/}/ro
+head -c 10 "$D"; echo</pre>
+<p>应分别显示 <b>1</b> 和 <b>RESTORE.ID</b>。用下面第一条命令检查恢复脚本版本并提取；看到独立一行 <code>RUN_READY</code> 才输入第二条。</p>
+<pre>test "$(tar -xOf "$D" RESTORE.ID)" = '{{MARKER}}' &amp;&amp; tar -xf "$D" -C /tmp RUN.SH &amp;&amp; echo RUN_READY
+sh /tmp/RUN.SH "$D"</pre>
+<p>脚本先核对 BIOS、目标版本、可写 ext4 根盘、分区位置、网络隔离、只读载体和归档完整性。未标记的目标盘若已有 ADH 配置，先回到 Hardware 核对卷 ID，并选新导入的干净盘。脚本按清单恢复文件，另行合并账号表，并调用新系统的程序检查恢复后的 ADH 配置和代理核心。看到独立一行 <code>RESTORE_OK</code> 才执行 <code>poweroff</code>。PVE 显示 Stopped 后，只按记录的<strong>临时配置卷 ID</strong> 分离恢复盘。留下新系统盘，原旧盘均为 Unused。再开机，进行单盘冷启动验收。</p>
+<h2 id="test">5　先验证 LAN，再恢复 WAN</h2>
+<ol><li>保持网络隔离，先在 VM Console 确认磁盘和恢复结果：</li></ol>
+<pre>df -h / /boot
+ip link
+uci -q get network.lan.device
+uci -q get network.lan.ipaddr
+uci -q get dhcp.@dnsmasq[0].server
+test -s /etc/AdGuardHome.yaml &amp;&amp; echo ADH_CONFIG_OK
+test -x /etc/openclash/core/clash_meta &amp;&amp; echo OPENCLASH_CORE_OK</pre>
+<p>按实际配置检查网桥成员、VLAN 和 WAN 设备；若 LAN 走 br-lan，可用 <code>ls /sys/class/net/br-lan/brif/</code> 对照原记录。若恢复包未包含旧管理密码，请在仍隔离时用 <code>passwd</code> 设置。</p>
+<ol start="2"><li>在 PVE 只给原 LAN 网卡取消 Disconnect，验证客户端能获得旧地址段、网关和 DNS，能登录 LuCI 和原 SSH 端口。先访问原 LAN 管理 IP；必要时给测试电脑临时设同网段空闲地址。对单臂 VLAN 共用 trunk 的部署，先在 Console 核对全部 VLAN 与 DHCP 绑定，再接 trunk。</li>
+<li>LAN 正常后接回实际 WAN，待 DHCP/PPPoE 与 IPv6 等服务初始化，再验证互联网、转发、静态租约、VPN 和原来的业务。对于原 DNS 链路 dnsmasq 53 → AdGuard Home 5335 → OpenClash 7874，可按下列顺序从上游逐级检查；按原先设置调整端口。</li></ol>
+<p>请先在 OpenClash 运行日志确认启动成功。此次测试中，Mihomo 开始监听后 OpenClash 还重启了一次 dnsmasq，期间查询 53 端口会短暂返回 <code>connection refused</code>。等启动完成后再次执行下面三条解析检查。如果仍失败，记录最先失败的那一级，再检查对应服务。</p>
+<pre>/etc/init.d/AdGuardHome status
+/etc/init.d/openclash status
+netstat -lntup | grep -E ':(53|5335|7874|3000)[[:space:]]'
+dig @127.0.0.1 -p 7874 example.org A +time=3 +tries=1
+dig @127.0.0.1 -p 5335 example.org A +time=3 +tries=1
+dig @127.0.0.1 -p 53 example.org A +time=3 +tries=1</pre>
+<p>fake-ip 模式可以返回合成 IP。再从 LAN 客户端实际解析一个域名。登录原生 ADH 管理页，查看规则、客户端与过滤列表；到 OpenClash 核对活动配置、核心和代理组；到 Argon 检查原来使用的背景图。图片和规则仅能从本次备份或补充的本地文件恢复。</p>
+<p>如果路由器本机三层 DNS 都能回答，但局域网客户端超时，请从客户端指定原 LAN 网关查询，同时查看 OpenClash 日志。若出现指向“本机 LAN 地址:53”的 <code>reject loopback connection</code>，请核对 OpenClash 的本地绕过网段和 DNS 劫持规则。测试中，采用特殊用途地址作 LAN 时出现了这一现象；请按你的实际网段核对。</p>
+<p>在新系统生成一次配置备份，下载到自己的电脑，核对活动配置、核心、过滤文件及主题图片确实在归档内。可在路由器终端先做只读清单检查：</p>
+<pre>sysupgrade -l &gt; /tmp/keep-check.txt
+grep -Fx /etc/AdGuardHome.yaml /tmp/keep-check.txt
+grep -Ec '^/usr/bin/AdGuardHome/data/filters/[^/]+[.]txt$' /tmp/keep-check.txt</pre>
+<p>计数应与向导私有恢复结果及你实际使用的过滤列表一致。记录备份包大小和 <code>df -h /boot</code> 的可用容量。后续采用把升级备份暂存到启动分区的升级流程时，应留出足够空间；确认候选固件的分区起点、容量、BIOS 模式和插件组成。默认升级镜像可能重新采用其自带分区表。</p>
+<h2 id="rollback">6　无法及时恢复网络时接回旧盘</h2>
+<ol><li>确认 PVE 独立管理入口可用，然后正常 Shutdown，等 Stopped。仅当客体完全无响应且正常关机超时时才考虑 Stop，强制停止会中断正在进行的写入。</li>
+<li>Detach 新系统盘与仍附加的私有恢复盘；暂保留卷。根据你写下的<b>完整卷 ID</b>，逐一从 Unused Disk 双击/Edit，手工接回各自的原总线/槽位、原读写和备份设置。原系统若使用双盘 extroot，启动盘与扩容盘必须一起接回；原系统若是一块缩小的启动盘，接回它能恢复切换前状态。</li>
+<li>Options → Boot Order 恢复原顺序；恢复网卡原连接状态与桥/VLAN，开机。用原管理 IP 检查 LAN、WAN、代理与 DNS。若切换前已丢失配置，你仍需要丢失前的私有备份。若旧卷损坏，用已验证的 PVE 整机备份恢复；在其他 VMID 测试时先隔离网卡，避免同时上线两个主路由。</li></ol>
+<h2 id="errors">故障速查</h2>
+<table><tr><th>结果</th><th>处理方法</th></tr>
+<tr><td>工具拒绝备份或提示缺文件/链接</td><td>留在旧系统，按本机提示补备符号链接和真实目标、活动配置及核心，检查选定的过滤目录或 Argon 图片。把必要自定义项单独备齐后重做私有恢复盘；不向公开问题跟踪系统提交备份或原始路径清单。</td></tr>
+<tr><td>公开构建或验证失败</td><td>保持原 VM 运行。只检查公开阶段的校验、软件包、磁盘空间与 Docker 输出。镜像或包签名不符时重新取得相同版本的官方文件。没有通过验证记录的产物不要启动为主路由。</td></tr>
+<tr><td>不启动、根分区小或提示系统版本不符</td><td>关机后核对卷 ID、SeaBIOS、实际系统盘是唯一启动项、旧盘均已分离。如果版本或布局发生变化，请按新选择重新生成私有恢复盘。</td></tr>
+<tr><td>载体标记不符、只读标志错或有多块候选盘</td><td>先关机检查已连接的卷。应只有一个可写的 {{DISK_GIB}} GiB 系统盘和本次生成的只读 RAW 恢复盘。重新对照上传的两份 SHA。不要通过改写 RUN.SH 跳过检测。</td></tr>
+<tr><td>没有 RUN_READY 或 RESTORE_OK，校验失败或 /tmp 空间不够</td><td>保持网络隔离。若标记与本手册不符，请在向导中核对目标版本和布局，重新生成、上传恢复盘并核对 SHA-256。若空间不足，可关机暂增 VM 内存，核对备份是否包含巨量日志。若提示上次写入中断或部分恢复，回退旧机或从已核验的公开 QCOW2 重新导入一个干净的新卷，并重新核对卷 ID 后再恢复。保留失败卷供本地排查。</td></tr>
+<tr><td>LAN 不通、WAN 没有地址或 DNS 超时</td><td>从 Console 检查 <code>ip addr</code>、<code>ip route</code>、<code>ifstatus lan</code>、<code>ifstatus wan</code>；核对桥、MAC、VLAN、PPPoE、Disconnect 与静态地址。DNS 先查 WAN 及 OpenClash 上游，再查 ADH，最后查 dnsmasq。若只在单个插件内丢配置，先核对原备份里是否有相应规则和数据目录。</td></tr></table>
+<h2 id="retire">7　清理和下一次升级</h2>
+<p>在新盘单独冷启动并通过真实业务验收后，先做一份<b>包含新系统盘的 PVE 整机备份</b>。保留旧系统独立备份，建议再观察数天。决定永久回收时，只按你事先记录的每个旧卷 ID 从 Unused Disk 执行 Remove。若快照或其他对象仍引用卷，保留卷并检查依赖。删除旧 extroot 后，不能再靠旧启动盘单独找回原运行状态。</p><p>用同样方法对照单独记录的临时配置卷 ID，清理它的 Unused 副本和目录存储 Import 区中的私有 RAW，防止它混入未来的备份或共享目录。原始备份和精选恢复包保存在可信私有位置。下一次升级可在向导选择新稳定版并重新核验布局、软件包与配置。</p>
+</body></html>

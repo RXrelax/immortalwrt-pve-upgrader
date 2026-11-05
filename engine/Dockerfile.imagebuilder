@@ -1,0 +1,8 @@
+FROM ubuntu:24.04
+ARG DEBIAN_FRONTEND=noninteractive
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    build-essential binutils bison bzip2 ca-certificates cpio curl e2fsprogs file \
+    flex gawk gettext git libelf-dev libncurses-dev libssl-dev patch perl pkg-config \
+    python3 python3-setuptools qemu-utils rsync time unzip wget xz-utils zlib1g-dev zstd \
+    && rm -rf /var/lib/apt/lists/*
+ENV LC_ALL=C TZ=UTC FORCE_UNSAFE_CONFIGURE=1
